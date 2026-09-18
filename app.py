@@ -236,27 +236,34 @@ if df_raw_all.empty:
 min_date = df_raw_all[COL_TANGGAL].min().date()
 max_date = df_raw_all[COL_TANGGAL].max().date()
 
-col1, col2 = st.columns([2, 1])
+col1, col2, col3 = st.columns([1, 1, 1])
 
 with col1:
-    date_range = st.date_input(
-        "1️⃣ Rentang Tanggal",
-        value=(min_date, max_date),
+    start_date = st.date_input(
+        "1️⃣ Tanggal Mulai",
+        value=min_date,
         min_value=min_date,
         max_value=max_date,
     )
 
 with col2:
+    end_date = st.date_input(
+        "Tanggal Akhir",
+        value=max_date,
+        min_value=min_date,
+        max_value=max_date,
+    )
+
+with col3:
     jenis_penjualan = st.selectbox(
         "2️⃣ Jenis Penjualan",
         ["ALL SALES", "Sales Online", "Sales Offline", "Marketplace"],
     )
 
-if len(date_range) != 2:
-    st.info("Pilih tanggal awal dan akhir.")
+if start_date > end_date:
+    st.warning("Tanggal Mulai tidak boleh setelah Tanggal Akhir.")
     st.stop()
 
-start_date, end_date = date_range
 mask_date = (df_raw_all[COL_TANGGAL].dt.date >= start_date) & (
     df_raw_all[COL_TANGGAL].dt.date <= end_date
 )
