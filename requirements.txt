@@ -4,3 +4,4 @@ numpy>=1.26
 gspread>=6.1
 google-auth>=2.34
 plotly>=5.24
+openpyxl>=3.1
