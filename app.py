@@ -46,8 +46,8 @@ COL_GP_ITEM_RAW = "Gross Profit/Item"  # kolom ini ada di data mentah, tapi akan
 
 MARGIN_THRESHOLD = 30000  # fixed, sesuai kode klasifikasi asli
 
-NAMA_ONLINE = ["Arum", "Luthfiah Wardah"]
-NAMA_EXCLUDE_OFFLINE = ["Arum", "Luthfiah Wardah", "Internal"]
+NAMA_ONLINE = ["ARUM", "LUTHFIAH WARDAH"]
+NAMA_EXCLUDE_OFFLINE = ["ARUM", "LUTHFIAH WARDAH", "Internal"]
 KATA_MARKETPLACE = ["shopee", "tiktok", "lazada", "blibli", "tokopedia"]
 
 QUADRANT_COLORS = {
