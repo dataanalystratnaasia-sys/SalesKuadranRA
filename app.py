@@ -1,8 +1,8 @@
 """
-Aplikasi Klasifikasi Kuadran Sales
------------------------------------
+Aplikasi Klasifikasi Inventory Movement/SKU
+-------------------------------------------
 Sumber data : Google Sheets (via gspread + Service Account)
-Output      : 4 Kuadran -> High/Low Margin x Fast/Slow Moving
+Output      : 4 Klasifikasi -> High/Low Margin x Fast/Slow Moving
 
 Alur:
 1. Ambil data mentah dari Google Sheets
@@ -10,9 +10,9 @@ Alur:
 3. Filter berdasarkan jenis penjualan (Online / Offline / Marketplace / All Sales)
 4. Tampilkan DATA_RAW
 5. Pivot per Brand/SKU/Nama Barang/Kategori Barang
-6. Klasifikasi kuadran (margin threshold fixed 30.000, moving pakai median log(QTY+1))
-7. Tampilkan tabel hasil kuadran
-8. Tampilkan chart kuadran (scatter, dengan skor)
+6. Klasifikasi (margin threshold fixed 30.000, moving pakai median log(QTY+1))
+7. Tampilkan tabel hasil klasifikasi
+8. Tampilkan chart klasifikasi (scatter, dengan skor)
 """
 
 import io
@@ -57,7 +57,21 @@ QUADRANT_COLORS = {
     "Low Margin - Slow Moving": "#C62828",
 }
 
-st.set_page_config(page_title="Klasifikasi Kuadran Sales", layout="wide")
+# Kolom yang disembunyikan dari tampilan tabel di UI
+# (perhitungan tetap utuh; kolom untuk file Excel diatur terpisah di EXCEL_HIDDEN_COLS)
+HIDDEN_UI_COLS = [
+    COL_HARGA, COL_TOTAL, COL_LABA, COL_GP_ITEM_RAW,
+    "@Harga", "Total Harga", "Laba", "Gross Profit/Item",
+    "Skor Kuadran",
+]
+
+
+def hide_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """Buang kolom sensitif dari tampilan UI saja."""
+    return df.drop(columns=HIDDEN_UI_COLS, errors="ignore")
+
+
+st.set_page_config(page_title="Klasifikasi Inventory Movement/SKU", layout="wide")
 
 
 # ============================================================
@@ -181,9 +195,9 @@ def build_pivot(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================================
-# KLASIFIKASI KUADRAN
+# KLASIFIKASI INVENTORY MOVEMENT
 # (porting dari Apps Script -> Python, moving disederhanakan
-#  jadi 2 kelas lewat median split agar hasilnya persis 4 kuadran)
+#  jadi 2 kelas lewat median split agar hasilnya persis 4 kelompok)
 # ============================================================
 def classify_quadrant(pivot_df: pd.DataFrame, margin_threshold: float = MARGIN_THRESHOLD):
     df = pivot_df.copy()
@@ -224,7 +238,7 @@ def classify_quadrant(pivot_df: pd.DataFrame, margin_threshold: float = MARGIN_T
 # ============================================================
 # UI
 # ============================================================
-st.title("📊 Klasifikasi Kuadran Sales")
+st.title("📊 Klasifikasi Inventory Movement/SKU")
 st.caption("High/Low Margin × Fast/Slow Moving — sumber data Google Sheets")
 
 df_raw_all = preprocess(load_data())
@@ -240,7 +254,7 @@ col1, col2, col3 = st.columns([1, 1, 1])
 
 with col1:
     start_date = st.date_input(
-        "1️⃣ Tanggal Mulai",
+        "Tanggal Mulai",
         value=min_date,
         min_value=min_date,
         max_value=max_date,
@@ -256,7 +270,7 @@ with col2:
 
 with col3:
     jenis_penjualan = st.selectbox(
-        "2️⃣ Jenis Penjualan",
+        "Jenis Penjualan",
         ["ALL SALES", "Sales Online", "Sales Offline", "Marketplace"],
     )
 
@@ -272,61 +286,63 @@ df_date_filtered = df_raw_all[mask_date]
 df_raw = filter_sales_type(df_date_filtered, jenis_penjualan)
 
 st.divider()
-st.subheader("3️⃣ Data Mentah (DATA_RAW)")
+st.subheader("Data Mentah (DATA_RAW)")
 st.caption(f"{len(df_raw):,} baris — filter: {jenis_penjualan}, {start_date} s/d {end_date}")
-st.dataframe(df_raw, use_container_width=True, height=300)
+st.dataframe(hide_cols(df_raw), use_container_width=True, height=300)
 
 if df_raw.empty:
     st.warning("Tidak ada data pada rentang tanggal & filter jenis penjualan ini.")
     st.stop()
 
 st.divider()
-st.subheader("4️⃣ Pivot per Produk")
+st.subheader("Pivot per Produk")
 pivot_df = build_pivot(df_raw)
 st.dataframe(
-    pivot_df.style.format(
-        {"@Harga": "{:,.0f}", "Total Harga": "{:,.0f}", "Laba": "{:,.0f}", "Gross Profit/Item": "{:,.0f}"}
-    ),
+    hide_cols(pivot_df),
     use_container_width=True,
     height=300,
 )
 
 st.divider()
-st.subheader("5️⃣ - 6️⃣ Hasil Klasifikasi Kuadran")
+st.subheader("Hasil Klasifikasi Inventory Movement")
 result_df, meta = classify_quadrant(pivot_df)
 
 info_cols = st.columns(4)
 for i, kuadran in enumerate(QUADRANT_COLORS.keys()):
     info_cols[i].metric(kuadran, meta["jumlah"].get(kuadran, 0))
 
+# Kolom lengkap (dipakai untuk perhitungan & sorting)
 display_cols = [
     "Brand", "SKU", "Nama Barang", "Kategori Barang", "QTY", "@Harga",
     "Total Harga", "Laba", "Gross Profit/Item", "Kategori Kuadran", "Skor Kuadran",
 ]
+
+# Kolom untuk file Excel hasil download: tanpa @Harga, Total Harga, Laba, Gross Profit/Item
+EXCEL_HIDDEN_COLS = ["@Harga", "Total Harga", "Laba", "Gross Profit/Item"]
+excel_cols = [c for c in display_cols if c not in EXCEL_HIDDEN_COLS]
+
+# Urutan tetap berdasarkan Skor Kuadran, tapi kolom skor tidak ditampilkan di UI
+result_sorted = result_df[display_cols].sort_values("Skor Kuadran", ascending=False)
 st.dataframe(
-    result_df[display_cols]
-    .sort_values("Skor Kuadran", ascending=False)
-    .style.format(
-        {"@Harga": "{:,.0f}", "Total Harga": "{:,.0f}", "Laba": "{:,.0f}", "Gross Profit/Item": "{:,.0f}"}
-    ),
+    hide_cols(result_sorted),
     use_container_width=True,
     height=350,
 )
 
 excel_buffer = io.BytesIO()
 with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-    result_df[display_cols].to_excel(writer, index=False, sheet_name="Hasil Kuadran")
+    result_df[excel_cols].to_excel(writer, index=False, sheet_name="Hasil Klasifikasi")
 excel_buffer.seek(0)
 
 st.download_button(
-    "⬇️ Download Hasil Kuadran (Excel)",
+    "⬇️ Download Hasil Klasifikasi Inventory Movement",
     data=excel_buffer,
-    file_name="hasil_kuadran.xlsx",
+    file_name="Hasil Klasifikasi Inventory Movement.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
 st.divider()
-st.subheader("7️⃣ Chart Kuadran")
+st.subheader("Chart Klasifikasi Inventory Movement")
 
 fig = px.scatter(
     result_df,
@@ -342,7 +358,7 @@ fig = px.scatter(
         "Nama Barang": True,
         "QTY": True,
         "Gross Profit/Item": ":,.0f",
-        "Skor Kuadran": True,
+        "Skor Kuadran": False,  # disembunyikan dari tooltip
         "Log_QTY": False,
     },
     labels={"Log_QTY": "Log(QTY + 1) — Moving Score", "Gross Profit/Item": "Gross Profit / Item (Rp)"},
@@ -351,19 +367,8 @@ fig.add_hline(y=meta["margin_threshold"], line_dash="dash", line_color="gray",
               annotation_text=f"Margin threshold ({meta['margin_threshold']:,.0f})")
 fig.add_vline(x=meta["median_log_qty"], line_dash="dash", line_color="gray",
               annotation_text="Median Moving")
-fig.update_layout(height=550, legend_title_text="Kuadran")
+fig.update_layout(height=550, legend_title_text="Klasifikasi")
 
 st.plotly_chart(fig, use_container_width=True)
 
-with st.expander("ℹ️ Keterangan perhitungan"):
-    st.markdown(
-        f"""
-        - **Margin**: `Gross Profit/Item = Laba (total) / QTY (total)` per produk hasil pivot.
-          Threshold fixed **Rp {meta['margin_threshold']:,.0f}** → ≥ threshold = **High Margin**.
-        - **Moving**: `Log(QTY + 1)`, dibandingkan terhadap **median** dari data yang sedang tampil
-          (median = {meta['median_log_qty']:.3f}) → ≥ median = **Fast Moving**.
-        - **Skor Kuadran** (0–100): rata-rata dari skor margin dan skor moving yang sudah
-          dinormalisasi (min-max) terhadap data yang sedang tampil. Dipakai sebagai ukuran
-          bubble pada chart — semakin besar & semakin ke kanan-atas, semakin unggul produk itu.
-        """
-    )
+# (Keterangan perhitungan sengaja dihapus dari UI)
