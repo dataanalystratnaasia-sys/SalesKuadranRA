@@ -161,7 +161,7 @@ def filter_sales_type(df: pd.DataFrame, jenis: str) -> pd.DataFrame:
 # ============================================================
 def build_pivot(df: pd.DataFrame) -> pd.DataFrame:
     grouped = (
-        df.groupby([COL_BRAND, COL_SKU, COL_NAMA_BARANG, COL_KATEGORI], as_index=False)
+        df.groupby([COL_BRAND, COL_SKU, COL_KATEGORI], as_index=False)
         .agg(
             QTY=(COL_QTY, "sum"),
             Total_Harga=(COL_TOTAL, "sum"),
