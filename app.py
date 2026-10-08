@@ -29,6 +29,7 @@ import plotly.express as px
 # ============================================================
 SPREADSHEET_ID = "12MKCpCDCQiQVmS81Qgj2VHqMV9nrVOCoTrE8z9V1oLM"
 SHEET_NAME = "Data"  # nama tab/worksheet di dalam spreadsheet
+SHEET_STOK = "Stok"  # nama tab stok di spreadsheet yang sama
 
 # Nama kolom persis seperti di Google Sheet
 COL_TANGGAL = "Tanggal"
@@ -97,6 +98,29 @@ def load_data():
     df = pd.DataFrame(records)
     return df
 
+@st.cache_data(ttl=300, show_spinner="Mengambil data stok dari Google Sheets...")
+def load_stok() -> pd.DataFrame:
+    """
+    Ambil sheet 'Stok' berdasarkan posisi kolom:
+    A = Kode Barang (SKU), B = Nama Barang, C = Satuan, D = Stok Dapat Dijual.
+    Hasil: 1 baris per SKU dengan kolom ['SKU', 'Stok'].
+    """
+    client = get_gspread_client()
+    ws = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_STOK)
+    values = ws.get_all_values()
+
+    # baris pertama = header, ambil kolom A-D saja
+    rows = [(r + [""] * 4)[:4] for r in values[1:]]
+    df = pd.DataFrame(rows, columns=["SKU", "Nama Barang Stok", "Satuan", "Stok"])
+
+    # Normalisasi SKU sama persis dengan di build_pivot (strip + upper)
+    df["SKU"] = df["SKU"].astype(str).str.strip().str.upper()
+    df = df[~df["SKU"].isin(["", "NAN", "NONE"])]
+
+    df["Stok"] = clean_numeric_column(df["Stok"]).fillna(0)
+
+    # Jika satu SKU muncul lebih dari sekali (mis. beda gudang), stok dijumlahkan
+    return df.groupby("SKU", as_index=False)["Stok"].sum()
 
 def clean_numeric_column(series: pd.Series) -> pd.Series:
     """Bersihkan kolom numerik yang mungkin terbawa sebagai string berformat mata uang."""
@@ -337,6 +361,10 @@ st.dataframe(
 st.divider()
 st.subheader("Hasil Klasifikasi Inventory Movement")
 result_df, meta = classify_quadrant(pivot_df)
+# Lookup stok berdasarkan SKU (left join: semua SKU hasil klasifikasi tetap tampil)
+stok_df = load_stok()
+result_df = result_df.merge(stok_df, on="SKU", how="left")
+result_df["Stok"] = result_df["Stok"].fillna(0)  # SKU tidak ada di sheet Stok -> 0
 
 info_cols = st.columns(4)
 for i, kuadran in enumerate(QUADRANT_COLORS.keys()):
@@ -344,7 +372,7 @@ for i, kuadran in enumerate(QUADRANT_COLORS.keys()):
 
 # Kolom lengkap (dipakai untuk perhitungan & sorting)
 display_cols = [
-    "Brand", "SKU", "Nama Barang", "Kategori Barang", "QTY", "@Harga",
+    "Brand", "SKU", "Nama Barang", "Kategori Barang", "QTY", "Stok", "@Harga",
     "Total Harga", "Laba", "Gross Profit/Item", "Kategori Kuadran", "Skor Kuadran",
 ]
 
