@@ -157,17 +157,49 @@ def filter_sales_type(df: pd.DataFrame, jenis: str) -> pd.DataFrame:
 
 
 # ============================================================
-# PIVOT
+# PIVOT (acuan: SKU saja)
 # ============================================================
+def _pilih_nilai_dominan(series: pd.Series):
+    """
+    Ambil nilai paling sering muncul dalam satu SKU.
+    Jika seri, ambil yang muncul terakhir (data paling baru, karena
+    df sudah diurutkan berdasarkan tanggal sebelum groupby).
+    """
+    s = series.dropna().astype(str).str.strip()
+    s = s[s != ""]
+    if s.empty:
+        return ""
+    counts = s.value_counts()
+    top = counts[counts == counts.max()].index
+    # pilih yang paling akhir muncul di antara kandidat seri
+    for val in reversed(s.tolist()):
+        if val in top:
+            return val
+    return counts.index[0]
+
+
 def build_pivot(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    # Normalisasi SKU agar variasi spasi/huruf kapital tidak membuat duplikat
+    df[COL_SKU] = df[COL_SKU].astype(str).str.strip().str.upper()
+    df = df[~df[COL_SKU].isin(["", "NAN", "NONE"])]
+
+    # Urutkan by tanggal supaya "nilai terbaru" bisa dipakai saat tie-break
+    df = df.sort_values(COL_TANGGAL)
+
     grouped = (
-        df.groupby([COL_BRAND, COL_SKU, COL_KATEGORI], as_index=False)
+        df.groupby(COL_SKU, as_index=False)
         .agg(
+            Brand=(COL_BRAND, _pilih_nilai_dominan),
+            Nama_Barang=(COL_NAMA_BARANG, _pilih_nilai_dominan),
+            Kategori_Barang=(COL_KATEGORI, _pilih_nilai_dominan),
             QTY=(COL_QTY, "sum"),
             Total_Harga=(COL_TOTAL, "sum"),
             Laba=(COL_LABA, "sum"),
         )
     )
+
     grouped["@Harga"] = np.where(
         grouped["QTY"] != 0, grouped["Total_Harga"] / grouped["QTY"], 0
     )
@@ -177,10 +209,9 @@ def build_pivot(df: pd.DataFrame) -> pd.DataFrame:
 
     grouped = grouped.rename(
         columns={
-            COL_BRAND: "Brand",
             COL_SKU: "SKU",
-            COL_NAMA_BARANG: "Nama Barang",
-            COL_KATEGORI: "Kategori Barang",
+            "Nama_Barang": "Nama Barang",
+            "Kategori_Barang": "Kategori Barang",
             "Total_Harga": "Total Harga",
         }
     )
