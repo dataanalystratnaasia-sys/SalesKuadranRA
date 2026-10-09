@@ -29,6 +29,7 @@ import plotly.express as px
 # ============================================================
 SPREADSHEET_ID = "12MKCpCDCQiQVmS81Qgj2VHqMV9nrVOCoTrE8z9V1oLM"
 SHEET_NAME = "Data"  # nama tab/worksheet di dalam spreadsheet
+SHEET_STOK = "Stok"  # nama tab stok di spreadsheet yang sama
 
 # Nama kolom persis seperti di Google Sheet
 COL_TANGGAL = "Tanggal"
@@ -70,49 +71,6 @@ def hide_cols(df: pd.DataFrame) -> pd.DataFrame:
     """Buang kolom sensitif dari tampilan UI saja."""
     return df.drop(columns=HIDDEN_UI_COLS, errors="ignore")
 
-# def apply_table_filters(df: pd.DataFrame, key: str) -> pd.DataFrame:
-#     """
-#     Filter ala Excel untuk tabel: pilih satu atau lebih kolom, lalu
-#     - kolom teks   -> pilih isi kolom (multiselect, bisa diketik untuk mencari)
-#     - kolom angka  -> pilih rentang (slider)
-#     Semua filter kolom digabung (AND).
-#     """
-#     with st.expander("🔎 Filter Tabel (bisa lebih dari satu kolom)"):
-#         kolom_dipilih = st.multiselect(
-#             "Pilih kolom yang ingin difilter",
-#             options=list(df.columns),
-#             key=f"{key}_kolom",
-#         )
-
-#         hasil = df
-#         for c in kolom_dipilih:
-#             s = df[c].dropna()
-#             if s.empty:
-#                 continue
-
-#             if pd.api.types.is_numeric_dtype(s):
-#                 lo, hi = float(s.min()), float(s.max())
-#                 if lo == hi:
-#                     st.caption(f"**{c}**: semua nilai sama ({lo:,.0f})")
-#                     continue
-#                 rentang = st.slider(
-#                     c, min_value=lo, max_value=hi, value=(lo, hi),
-#                     key=f"{key}_{c}_rng",
-#                 )
-#                 hasil = hasil[hasil[c].between(rentang[0], rentang[1])]
-#             else:
-#                 opsi = sorted(s.astype(str).unique())
-#                 pilihan = st.multiselect(
-#                     c, options=opsi, key=f"{key}_{c}_val",
-#                     placeholder="Semua (pilih untuk menyaring)",
-#                 )
-#                 if pilihan:
-#                     hasil = hasil[hasil[c].astype(str).isin(pilihan)]
-
-#         if kolom_dipilih:
-#             st.caption(f"Menampilkan {len(hasil):,} dari {len(df):,} baris")
-
-#     return hasil
 
 st.set_page_config(page_title="Klasifikasi Inventory Movement/SKU", layout="wide")
 
@@ -140,6 +98,29 @@ def load_data():
     df = pd.DataFrame(records)
     return df
 
+@st.cache_data(ttl=300, show_spinner="Mengambil data stok dari Google Sheets...")
+def load_stok() -> pd.DataFrame:
+    """
+    Ambil sheet 'Stok' berdasarkan posisi kolom:
+    A = Kode Barang (SKU), B = Nama Barang, C = Satuan, D = Stok Dapat Dijual.
+    Hasil: 1 baris per SKU dengan kolom ['SKU', 'Stok'].
+    """
+    client = get_gspread_client()
+    ws = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_STOK)
+    values = ws.get_all_values()
+
+    # baris pertama = header, ambil kolom A-D saja
+    rows = [(r + [""] * 4)[:4] for r in values[1:]]
+    df = pd.DataFrame(rows, columns=["SKU", "Nama Barang Stok", "Satuan", "Stok"])
+
+    # Normalisasi SKU sama persis dengan di build_pivot (strip + upper)
+    df["SKU"] = df["SKU"].astype(str).str.strip().str.upper()
+    df = df[~df["SKU"].isin(["", "NAN", "NONE"])]
+
+    df["Stok"] = clean_numeric_column(df["Stok"]).fillna(0)
+
+    # Jika satu SKU muncul lebih dari sekali (mis. beda gudang), stok dijumlahkan
+    return df.groupby("SKU", as_index=False)["Stok"].sum()
 
 def clean_numeric_column(series: pd.Series) -> pd.Series:
     """Bersihkan kolom numerik yang mungkin terbawa sebagai string berformat mata uang."""
@@ -174,7 +155,6 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     df[COL_SALES] = df[COL_SALES].astype(str).str.strip()
     df.loc[df[COL_SALES].isin(["", "nan", "None"]), COL_SALES] = ""
     df[COL_PELANGGAN] = df[COL_PELANGGAN].astype(str).str.strip()
-    df[COL_BRAND] = df[COL_BRAND].astype(str).str.strip()
 
     df = df.dropna(subset=[COL_TANGGAL])
     return df
@@ -325,15 +305,7 @@ if df_raw_all.empty:
 min_date = df_raw_all[COL_TANGGAL].min().date()
 max_date = df_raw_all[COL_TANGGAL].max().date()
 
-# Opsi filter Merk & Sales diambil dari seluruh data
-brand_options = sorted(
-    b for b in df_raw_all[COL_BRAND].unique() if b not in ("", "nan", "None")
-)
-sales_options = sorted(s for s in df_raw_all[COL_SALES].unique() if s != "")
-if (df_raw_all[COL_SALES] == "").any():
-    sales_options.append("")  # baris tanpa nama sales, ditampilkan sebagai "(Kosong)"
-
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3 = st.columns([1, 1, 1])
 
 with col1:
     start_date = st.date_input(
@@ -357,21 +329,6 @@ with col3:
         ["ALL SALES", "Sales Online", "Sales Offline", "Marketplace"],
     )
 
-with col4:
-    pilih_brand = st.multiselect(
-        "Merk",
-        options=brand_options,
-        placeholder="Semua merk",
-    )
-
-with col5:
-    pilih_sales = st.multiselect(
-        "Sales",
-        options=sales_options,
-        format_func=lambda x: x if x else "(Kosong)",
-        placeholder="Semua sales",
-    )
-
 if start_date > end_date:
     st.warning("Tanggal Mulai tidak boleh setelah Tanggal Akhir.")
     st.stop()
@@ -383,18 +340,10 @@ df_date_filtered = df_raw_all[mask_date]
 
 df_raw = filter_sales_type(df_date_filtered, jenis_penjualan)
 
-# Filter Merk & Sales (kosong = semua)
-if pilih_brand:
-    df_raw = df_raw[df_raw[COL_BRAND].isin(pilih_brand)]
-if pilih_sales:
-    df_raw = df_raw[df_raw[COL_SALES].isin(pilih_sales)]
-
 st.divider()
 st.subheader("Data Mentah (DATA_RAW)")
 st.caption(f"{len(df_raw):,} baris — filter: {jenis_penjualan}, {start_date} s/d {end_date}")
-st.caption(f"{len(df_raw):,} baris — filter: {jenis_penjualan}, {start_date} s/d {end_date}")
-raw_view = hide_cols((df_raw), key="raw")
-st.dataframe(raw_view, use_container_width=True, height=300)
+st.dataframe(hide_cols(df_raw), use_container_width=True, height=300)
 
 if df_raw.empty:
     st.warning("Tidak ada data pada rentang tanggal & filter jenis penjualan ini.")
@@ -403,12 +352,19 @@ if df_raw.empty:
 st.divider()
 st.subheader("Pivot per Produk")
 pivot_df = build_pivot(df_raw)
-pivot_view = hide_cols((pivot_df), key="pivot")
-st.dataframe(pivot_view, use_container_width=True, height=300)
+st.dataframe(
+    hide_cols(pivot_df),
+    use_container_width=True,
+    height=300,
+)
 
 st.divider()
 st.subheader("Hasil Klasifikasi Inventory Movement")
 result_df, meta = classify_quadrant(pivot_df)
+# Lookup stok berdasarkan SKU (left join: semua SKU hasil klasifikasi tetap tampil)
+stok_df = load_stok()
+result_df = result_df.merge(stok_df, on="SKU", how="left")
+result_df["Stok"] = result_df["Stok"].fillna(0)  # SKU tidak ada di sheet Stok -> 0
 
 info_cols = st.columns(4)
 for i, kuadran in enumerate(QUADRANT_COLORS.keys()):
@@ -416,7 +372,7 @@ for i, kuadran in enumerate(QUADRANT_COLORS.keys()):
 
 # Kolom lengkap (dipakai untuk perhitungan & sorting)
 display_cols = [
-    "Brand", "SKU", "Nama Barang", "Kategori Barang", "QTY", "@Harga",
+    "Brand", "SKU", "Nama Barang", "Kategori Barang", "QTY", "Stok", "@Harga",
     "Total Harga", "Laba", "Gross Profit/Item", "Kategori Kuadran", "Skor Kuadran",
 ]
 
@@ -426,8 +382,11 @@ excel_cols = [c for c in display_cols if c not in EXCEL_HIDDEN_COLS]
 
 # Urutan tetap berdasarkan Skor Kuadran, tapi kolom skor tidak ditampilkan di UI
 result_sorted = result_df[display_cols].sort_values("Skor Kuadran", ascending=False)
-hasil_view = apply_table_filters(hide_cols(result_sorted), key="hasil")
-st.dataframe(hasil_view, use_container_width=True, height=350)
+st.dataframe(
+    hide_cols(result_sorted),
+    use_container_width=True,
+    height=350,
+)
 
 excel_buffer = io.BytesIO()
 with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
@@ -471,4 +430,4 @@ fig.update_layout(height=550, legend_title_text="Klasifikasi")
 
 st.plotly_chart(fig, use_container_width=True)
 
-# (Keterangan perhitungan sengaja dihapus dari UI)
+# (Keterangan perhitungan sengaja dihapus dari UI)  
