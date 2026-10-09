@@ -393,7 +393,7 @@ st.divider()
 st.subheader("Data Mentah (DATA_RAW)")
 st.caption(f"{len(df_raw):,} baris — filter: {jenis_penjualan}, {start_date} s/d {end_date}")
 st.caption(f"{len(df_raw):,} baris — filter: {jenis_penjualan}, {start_date} s/d {end_date}")
-raw_view = apply_table_filters(hide_cols(df_raw), key="raw")
+raw_view = hide_cols((df_raw), key="raw")
 st.dataframe(raw_view, use_container_width=True, height=300)
 
 if df_raw.empty:
@@ -403,7 +403,7 @@ if df_raw.empty:
 st.divider()
 st.subheader("Pivot per Produk")
 pivot_df = build_pivot(df_raw)
-pivot_view = apply_table_filters(hide_cols(pivot_df), key="pivot")
+pivot_view = hide_cols((pivot_df), key="pivot")
 st.dataframe(pivot_view, use_container_width=True, height=300)
 
 st.divider()
