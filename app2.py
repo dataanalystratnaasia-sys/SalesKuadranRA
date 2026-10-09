@@ -70,6 +70,52 @@ def hide_cols(df: pd.DataFrame) -> pd.DataFrame:
     """Buang kolom sensitif dari tampilan UI saja."""
     return df.drop(columns=HIDDEN_UI_COLS, errors="ignore")
 
+<<<<<<< HEAD
+=======
+# def apply_table_filters(df: pd.DataFrame, key: str) -> pd.DataFrame:
+#     """
+#     Filter ala Excel untuk tabel: pilih satu atau lebih kolom, lalu
+#     - kolom teks   -> pilih isi kolom (multiselect, bisa diketik untuk mencari)
+#     - kolom angka  -> pilih rentang (slider)
+#     Semua filter kolom digabung (AND).
+#     """
+#     with st.expander("🔎 Filter Tabel (bisa lebih dari satu kolom)"):
+#         kolom_dipilih = st.multiselect(
+#             "Pilih kolom yang ingin difilter",
+#             options=list(df.columns),
+#             key=f"{key}_kolom",
+#         )
+
+#         hasil = df
+#         for c in kolom_dipilih:
+#             s = df[c].dropna()
+#             if s.empty:
+#                 continue
+
+#             if pd.api.types.is_numeric_dtype(s):
+#                 lo, hi = float(s.min()), float(s.max())
+#                 if lo == hi:
+#                     st.caption(f"**{c}**: semua nilai sama ({lo:,.0f})")
+#                     continue
+#                 rentang = st.slider(
+#                     c, min_value=lo, max_value=hi, value=(lo, hi),
+#                     key=f"{key}_{c}_rng",
+#                 )
+#                 hasil = hasil[hasil[c].between(rentang[0], rentang[1])]
+#             else:
+#                 opsi = sorted(s.astype(str).unique())
+#                 pilihan = st.multiselect(
+#                     c, options=opsi, key=f"{key}_{c}_val",
+#                     placeholder="Semua (pilih untuk menyaring)",
+#                 )
+#                 if pilihan:
+#                     hasil = hasil[hasil[c].astype(str).isin(pilihan)]
+
+#         if kolom_dipilih:
+#             st.caption(f"Menampilkan {len(hasil):,} dari {len(df):,} baris")
+
+#     return hasil
+>>>>>>> 60915f229dba055ac83fdd034a350d4503b25b2c
 
 st.set_page_config(page_title="Klasifikasi Inventory Movement/SKU", layout="wide")
 
@@ -319,7 +365,13 @@ df_raw = filter_sales_type(df_date_filtered, jenis_penjualan)
 st.divider()
 st.subheader("Data Mentah (DATA_RAW)")
 st.caption(f"{len(df_raw):,} baris — filter: {jenis_penjualan}, {start_date} s/d {end_date}")
+<<<<<<< HEAD
 st.dataframe(hide_cols(df_raw), use_container_width=True, height=300)
+=======
+st.caption(f"{len(df_raw):,} baris — filter: {jenis_penjualan}, {start_date} s/d {end_date}")
+raw_view = hide_cols((df_raw), key="raw")
+st.dataframe(raw_view, use_container_width=True, height=300)
+>>>>>>> 60915f229dba055ac83fdd034a350d4503b25b2c
 
 if df_raw.empty:
     st.warning("Tidak ada data pada rentang tanggal & filter jenis penjualan ini.")
@@ -328,11 +380,16 @@ if df_raw.empty:
 st.divider()
 st.subheader("Pivot per Produk")
 pivot_df = build_pivot(df_raw)
+<<<<<<< HEAD
 st.dataframe(
     hide_cols(pivot_df),
     use_container_width=True,
     height=300,
 )
+=======
+pivot_view = hide_cols((pivot_df), key="pivot")
+st.dataframe(pivot_view, use_container_width=True, height=300)
+>>>>>>> 60915f229dba055ac83fdd034a350d4503b25b2c
 
 st.divider()
 st.subheader("Hasil Klasifikasi Inventory Movement")
