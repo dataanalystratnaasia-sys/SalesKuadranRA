@@ -155,6 +155,7 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     df[COL_SALES] = df[COL_SALES].astype(str).str.strip()
     df.loc[df[COL_SALES].isin(["", "nan", "None"]), COL_SALES] = ""
     df[COL_PELANGGAN] = df[COL_PELANGGAN].astype(str).str.strip()
+    df[COL_BRAND] = df[COL_BRAND].astype(str).str.strip()   # <-- BARU
 
     df = df.dropna(subset=[COL_TANGGAL])
     return df
@@ -305,7 +306,7 @@ if df_raw_all.empty:
 min_date = df_raw_all[COL_TANGGAL].min().date()
 max_date = df_raw_all[COL_TANGGAL].max().date()
 
-col1, col2, col3 = st.columns([1, 1, 1])
+col1, col2, col3, col4 = st.columns([1, 1, 1, 1.5])
 
 with col1:
     start_date = st.date_input(
@@ -329,6 +330,18 @@ with col3:
         ["ALL SALES", "Sales Online", "Sales Offline", "Marketplace"],
     )
 
+with col4:
+    brand_options = sorted(
+        b for b in df_raw_all[COL_BRAND].unique()
+        if b not in ("", "nan", "None")
+    )
+    brand_terpilih = st.multiselect(
+        "Brand",
+        options=brand_options,
+        default=[],
+        placeholder="Semua brand",
+    )
+
 if start_date > end_date:
     st.warning("Tanggal Mulai tidak boleh setelah Tanggal Akhir.")
     st.stop()
@@ -339,10 +352,16 @@ mask_date = (df_raw_all[COL_TANGGAL].dt.date >= start_date) & (
 df_date_filtered = df_raw_all[mask_date]
 
 df_raw = filter_sales_type(df_date_filtered, jenis_penjualan)
+if brand_terpilih:
+    df_raw = df_raw[df_raw[COL_BRAND].isin(brand_terpilih)]
+brand_label = ", ".join(brand_terpilih) if brand_terpilih else "Semua Brand"
 
 st.divider()
 st.subheader("Data Mentah (DATA_RAW)")
-st.caption(f"{len(df_raw):,} baris — filter: {jenis_penjualan}, {start_date} s/d {end_date}")
+st.caption(
+    f"{len(df_raw):,} baris — filter: {jenis_penjualan}, {brand_label}, "
+    f"{start_date} s/d {end_date}"
+)
 st.dataframe(hide_cols(df_raw), use_container_width=True, height=300)
 
 if df_raw.empty:
