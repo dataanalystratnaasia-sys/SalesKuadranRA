@@ -3,16 +3,18 @@ Aplikasi Klasifikasi Inventory Movement/SKU
 -------------------------------------------
 Sumber data : Google Sheets (via gspread + Service Account)
 Output      : 4 Klasifikasi -> High/Low Margin x Fast/Slow Moving
+              + Reorder Point per SKU
 
 Alur:
 1. Ambil data mentah dari Google Sheets
 2. Filter berdasarkan rentang tanggal
 3. Filter berdasarkan jenis penjualan (Online / Offline / Marketplace / All Sales)
 4. Tampilkan DATA_RAW
-5. Pivot per Brand/SKU/Nama Barang/Kategori Barang
-6. Klasifikasi (margin threshold fixed 30.000, moving pakai median log(QTY+1))
-7. Tampilkan tabel hasil klasifikasi
-8. Tampilkan chart klasifikasi (scatter, dengan skor)
+5. Hitung statistik penjualan harian & Reorder Point per SKU (sebelum pivot)
+6. Pivot per Brand/SKU/Nama Barang/Kategori Barang
+7. Klasifikasi (margin threshold fixed 30.000, moving pakai median log(QTY+1))
+8. Tampilkan tabel hasil klasifikasi
+9. Tampilkan chart klasifikasi (scatter, dengan skor)
 """
 
 import io
@@ -46,6 +48,21 @@ COL_LABA = "Laba"
 COL_GP_ITEM_RAW = "Gross Profit/Item"  # kolom ini ada di data mentah, tapi akan dihitung ulang saat pivot
 
 MARGIN_THRESHOLD = 30000  # fixed, sesuai kode klasifikasi asli
+
+# Parameter Reorder Point (dalam hari)
+LEAD_TIME = 7            # untuk Lead Time Demand
+LEAD_TIME_TERLAMA = 30   # untuk Safety Stock
+LEAD_TIME_RATA2 = 7      # untuk Safety Stock
+
+# Kolom statistik penjualan & reorder point
+STAT_COLS = [
+    "Rata-Rata Penjualan Per-Hari",
+    "Penjualan Harian Tertinggi",
+    "Rata-Rata Penjualan Harian",
+    "Lead Time Demand",
+    "Safety Stock",
+    "Reorder Point",
+]
 
 NAMA_ONLINE = ["ARUM", "LUTHFIAH WARDAH"]
 NAMA_EXCLUDE_OFFLINE = ["ARUM", "LUTHFIAH WARDAH", "Internal"]
@@ -98,6 +115,7 @@ def load_data():
     df = pd.DataFrame(records)
     return df
 
+
 @st.cache_data(ttl=300, show_spinner="Mengambil data stok dari Google Sheets...")
 def load_stok() -> pd.DataFrame:
     """
@@ -121,6 +139,7 @@ def load_stok() -> pd.DataFrame:
 
     # Jika satu SKU muncul lebih dari sekali (mis. beda gudang), stok dijumlahkan
     return df.groupby("SKU", as_index=False)["Stok"].sum()
+
 
 def clean_numeric_column(series: pd.Series) -> pd.Series:
     """Bersihkan kolom numerik yang mungkin terbawa sebagai string berformat mata uang."""
@@ -155,7 +174,7 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     df[COL_SALES] = df[COL_SALES].astype(str).str.strip()
     df.loc[df[COL_SALES].isin(["", "nan", "None"]), COL_SALES] = ""
     df[COL_PELANGGAN] = df[COL_PELANGGAN].astype(str).str.strip()
-    df[COL_BRAND] = df[COL_BRAND].astype(str).str.strip()   # <-- BARU
+    df[COL_BRAND] = df[COL_BRAND].astype(str).str.strip()
 
     df = df.dropna(subset=[COL_TANGGAL])
     return df
@@ -179,6 +198,58 @@ def filter_sales_type(df: pd.DataFrame, jenis: str) -> pd.DataFrame:
 
     # ALL SALES
     return df
+
+
+# ============================================================
+# STATISTIK PENJUALAN HARIAN & REORDER POINT (per SKU)
+# ============================================================
+def build_sales_stats(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
+    """
+    Hitung statistik penjualan harian per SKU dari data yang SUDAH difilter
+    (tanggal, brand, jenis penjualan), sebelum pivot.
+
+    - Rata-Rata Penjualan Per-Hari : total QTY / jumlah hari kalender pada rentang tanggal
+    - Penjualan Harian Tertinggi   : QTY harian terbesar
+    - Rata-Rata Penjualan Harian   : rata-rata QTY harian pada hari yang ada penjualannya
+
+    Reorder Point:
+    - Lead Time Demand = Lead Time x Rata-Rata Penjualan Per-Hari
+    - Safety Stock     = (Penjualan Harian Tertinggi x Lead Time Terlama)
+                         - (Rata-Rata Penjualan Harian x Rata-Rata Lead Time)
+    - Reorder Point    = Lead Time Demand + Safety Stock
+    """
+    d = df.copy()
+    d[COL_SKU] = d[COL_SKU].astype(str).str.strip().str.upper()
+    d = d[~d[COL_SKU].isin(["", "NAN", "NONE"])]
+    d["_tgl"] = d[COL_TANGGAL].dt.date
+
+    # QTY per SKU per hari
+    harian = d.groupby([COL_SKU, "_tgl"], as_index=False)[COL_QTY].sum()
+
+    jumlah_hari = max((end_date - start_date).days + 1, 1)
+
+    stats = (
+        harian.groupby(COL_SKU, as_index=False)
+        .agg(
+            total_qty=(COL_QTY, "sum"),
+            **{
+                "Penjualan Harian Tertinggi": (COL_QTY, "max"),
+                "Rata-Rata Penjualan Harian": (COL_QTY, "mean"),
+            },
+        )
+    )
+    stats["Rata-Rata Penjualan Per-Hari"] = stats["total_qty"] / jumlah_hari
+    stats = stats.drop(columns="total_qty").rename(columns={COL_SKU: "SKU"})
+
+    # ---- Reorder Point ----
+    stats["Lead Time Demand"] = LEAD_TIME * stats["Rata-Rata Penjualan Per-Hari"]
+    stats["Safety Stock"] = (
+        stats["Penjualan Harian Tertinggi"] * LEAD_TIME_TERLAMA
+    ) - (stats["Rata-Rata Penjualan Harian"] * LEAD_TIME_RATA2)
+    stats["Reorder Point"] = stats["Lead Time Demand"] + stats["Safety Stock"]
+
+    stats[STAT_COLS] = stats[STAT_COLS].round(2)
+    return stats[["SKU", *STAT_COLS]]
 
 
 # ============================================================
@@ -370,6 +441,11 @@ if df_raw.empty:
 
 st.divider()
 st.subheader("Pivot per Produk")
+
+# Statistik penjualan harian & Reorder Point dihitung SEBELUM pivot,
+# dari data yang sudah difilter (tanggal, brand, jenis penjualan)
+sales_stats = build_sales_stats(df_raw, start_date, end_date)
+
 pivot_df = build_pivot(df_raw)
 st.dataframe(
     hide_cols(pivot_df),
@@ -380,19 +456,27 @@ st.dataframe(
 st.divider()
 st.subheader("Hasil Klasifikasi Inventory Movement")
 result_df, meta = classify_quadrant(pivot_df)
+
 # Lookup stok berdasarkan SKU (left join: semua SKU hasil klasifikasi tetap tampil)
 stok_df = load_stok()
 result_df = result_df.merge(stok_df, on="SKU", how="left")
 result_df["Stok"] = result_df["Stok"].fillna(0)  # SKU tidak ada di sheet Stok -> 0
+
+# Gabungkan statistik penjualan harian & Reorder Point
+result_df = result_df.merge(sales_stats, on="SKU", how="left")
+result_df[STAT_COLS] = result_df[STAT_COLS].fillna(0)
 
 info_cols = st.columns(4)
 for i, kuadran in enumerate(QUADRANT_COLORS.keys()):
     info_cols[i].metric(kuadran, meta["jumlah"].get(kuadran, 0))
 
 # Kolom lengkap (dipakai untuk perhitungan & sorting)
+# Kolom statistik & Reorder Point berada di antara Stok dan Kategori Kuadran
 display_cols = [
-    "Brand", "SKU", "Nama Barang", "Kategori Barang", "QTY", "Stok", "@Harga",
-    "Total Harga", "Laba", "Gross Profit/Item", "Kategori Kuadran", "Skor Kuadran",
+    "Brand", "SKU", "Nama Barang", "Kategori Barang", "QTY", "Stok",
+    *STAT_COLS,
+    "@Harga", "Total Harga", "Laba", "Gross Profit/Item",
+    "Kategori Kuadran", "Skor Kuadran",
 ]
 
 # Kolom untuk file Excel hasil download: tanpa @Harga, Total Harga, Laba, Gross Profit/Item
@@ -449,4 +533,4 @@ fig.update_layout(height=550, legend_title_text="Klasifikasi")
 
 st.plotly_chart(fig, use_container_width=True)
 
-# (Keterangan perhitungan sengaja dihapus dari UI)  
+# (Keterangan perhitungan sengaja dihapus dari UI)
