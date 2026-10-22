@@ -539,7 +539,7 @@ for i, kuadran in enumerate(QUADRANT_COLORS.keys()):
 # Kolom statistik & Reorder Point berada di antara Stok dan Kategori Kuadran
 display_cols = [
     "Brand", "SKU", "Nama Barang", "Kategori Barang", "QTY", "Stok",
-    *STAT_COLS,
+    "Reorder Point",
     "@Harga", "Total Harga", "Laba", "Gross Profit/Item",
     "Kategori Kuadran", "Skor Kuadran",
 ]
