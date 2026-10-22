@@ -7,14 +7,15 @@ Output      : 4 Klasifikasi -> High/Low Margin x Fast/Slow Moving
 
 Alur:
 1. Ambil data mentah dari Google Sheets
-2. Filter berdasarkan rentang tanggal
-3. Filter berdasarkan jenis penjualan (Online / Offline / Marketplace / All Sales)
-4. Tampilkan DATA_RAW
-5. Hitung statistik penjualan harian & Reorder Point per SKU (sebelum pivot)
-6. Pivot per Brand/SKU/Nama Barang/Kategori Barang
-7. Klasifikasi (margin threshold fixed 30.000, moving pakai median log(QTY+1))
-8. Tampilkan tabel hasil klasifikasi
-9. Tampilkan chart klasifikasi (scatter, dengan skor)
+2. Filter berdasarkan rentang tanggal, jenis penjualan, dan brand
+3. Tampilkan DATA_RAW
+4. Data dipisah menjadi dua jalur:
+   a. Jalur KLASIFIKASI   : memakai SEMUA data hasil filter (df_raw)
+   b. Jalur REORDER POINT : memakai data hasil filter + buang anomali
+                            (penjualan harian di atas batas Q3 per SKU)
+5. Hitung statistik penjualan harian & Reorder Point per SKU (jalur b)
+6. Pivot per SKU & klasifikasi (jalur a)
+7. Gabungkan hasil, tampilkan tabel & chart
 """
 
 import io
@@ -54,7 +55,16 @@ LEAD_TIME = 7            # untuk Lead Time Demand
 LEAD_TIME_TERLAMA = 30   # untuk Safety Stock
 LEAD_TIME_RATA2 = 7      # untuk Safety Stock
 
-# Kolom statistik penjualan & reorder point
+# Parameter pembuangan anomali (khusus perhitungan Reorder Point)
+# Batas atas = Q3 + IQR_MULTIPLIER x (Q3 - Q1), dihitung per SKU dari QTY harian.
+#   0.0 -> batas persis di Q3 (data di atas Q3 dibuang)
+#   1.5 -> batas outlier standar (Tukey fence), lebih longgar
+IQR_MULTIPLIER = 0.0
+# SKU dengan jumlah hari transaksi kurang dari ini tidak difilter
+# (data terlalu sedikit untuk menghitung kuartil secara bermakna)
+MIN_HARI_IQR = 4
+
+# Kolom statistik & reorder point yang ditampilkan di tabel hasil
 STAT_COLS = [
     "Rata-Rata Penjualan Per-Hari",
     "Penjualan Harian Tertinggi",
@@ -201,12 +211,72 @@ def filter_sales_type(df: pd.DataFrame, jenis: str) -> pd.DataFrame:
 
 
 # ============================================================
+# DATA UNTUK REORDER POINT: BUANG ANOMALI (IQR / KUARTIL)
+# ============================================================
+def build_reorder_data(df: pd.DataFrame):
+    """
+    Siapkan data khusus perhitungan Reorder Point (terpisah dari data klasifikasi).
+
+    Langkah:
+    1. Agregasi QTY per SKU per hari.
+    2. Hitung Q1, Q2 (median), Q3 dari QTY harian, per SKU.
+    3. Batas atas = Q3 + IQR_MULTIPLIER x (Q3 - Q1).
+       Hari dengan QTY di atas batas dianggap anomali dan TIDAK dipakai.
+       SKU dengan hari transaksi < MIN_HARI_IQR tidak difilter.
+
+    Return:
+    - harian_bersih : QTY harian per SKU setelah anomali dibuang
+    - iqr_info      : ringkasan Q1/Q2/Q3, batas atas, dan jumlah hari dibuang per SKU
+    """
+    d = df.copy()
+    d[COL_SKU] = d[COL_SKU].astype(str).str.strip().str.upper()
+    d = d[~d[COL_SKU].isin(["", "NAN", "NONE"])]
+    d["_tgl"] = d[COL_TANGGAL].dt.date
+
+    # QTY per SKU per hari
+    harian = d.groupby([COL_SKU, "_tgl"], as_index=False)[COL_QTY].sum()
+
+    # Kuartil per SKU
+    grp = harian.groupby(COL_SKU)[COL_QTY]
+    iqr_info = pd.DataFrame(
+        {
+            "Q1": grp.quantile(0.25),
+            "Q2": grp.quantile(0.50),
+            "Q3": grp.quantile(0.75),
+            "Hari Transaksi": grp.count(),
+        }
+    ).reset_index()
+    iqr_info["Batas Atas"] = iqr_info["Q3"] + IQR_MULTIPLIER * (
+        iqr_info["Q3"] - iqr_info["Q1"]
+    )
+
+    harian = harian.merge(iqr_info, on=COL_SKU, how="left")
+
+    # Hari dipakai jika: data terlalu sedikit untuk difilter, ATAU QTY <= batas atas
+    pakai = (harian["Hari Transaksi"] < MIN_HARI_IQR) | (
+        harian[COL_QTY] <= harian["Batas Atas"]
+    )
+    harian_bersih = harian[pakai][[COL_SKU, "_tgl", COL_QTY]].copy()
+
+    # Ringkasan jumlah hari yang dibuang per SKU
+    dipakai = harian_bersih.groupby(COL_SKU)[COL_QTY].count().rename("Hari Dipakai")
+    iqr_info = iqr_info.merge(dipakai, left_on=COL_SKU, right_index=True, how="left")
+    iqr_info["Hari Dipakai"] = iqr_info["Hari Dipakai"].fillna(0).astype(int)
+    iqr_info["Hari Dibuang (Anomali)"] = (
+        iqr_info["Hari Transaksi"] - iqr_info["Hari Dipakai"]
+    )
+    iqr_info = iqr_info.rename(columns={COL_SKU: "SKU"})
+
+    return harian_bersih, iqr_info
+
+
+# ============================================================
 # STATISTIK PENJUALAN HARIAN & REORDER POINT (per SKU)
 # ============================================================
-def build_sales_stats(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
+def build_sales_stats(harian_bersih: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
     """
-    Hitung statistik penjualan harian per SKU dari data yang SUDAH difilter
-    (tanggal, brand, jenis penjualan), sebelum pivot.
+    Hitung statistik penjualan harian & Reorder Point per SKU dari data harian
+    yang sudah dibersihkan dari anomali (lihat build_reorder_data).
 
     - Rata-Rata Penjualan Per-Hari : total QTY / jumlah hari kalender pada rentang tanggal
     - Penjualan Harian Tertinggi   : QTY harian terbesar
@@ -218,18 +288,10 @@ def build_sales_stats(df: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
                          - (Rata-Rata Penjualan Harian x Rata-Rata Lead Time)
     - Reorder Point    = Lead Time Demand + Safety Stock
     """
-    d = df.copy()
-    d[COL_SKU] = d[COL_SKU].astype(str).str.strip().str.upper()
-    d = d[~d[COL_SKU].isin(["", "NAN", "NONE"])]
-    d["_tgl"] = d[COL_TANGGAL].dt.date
-
-    # QTY per SKU per hari
-    harian = d.groupby([COL_SKU, "_tgl"], as_index=False)[COL_QTY].sum()
-
     jumlah_hari = max((end_date - start_date).days + 1, 1)
 
     stats = (
-        harian.groupby(COL_SKU, as_index=False)
+        harian_bersih.groupby(COL_SKU, as_index=False)
         .agg(
             total_qty=(COL_QTY, "sum"),
             **{
@@ -439,13 +501,16 @@ if df_raw.empty:
     st.warning("Tidak ada data pada rentang tanggal & filter jenis penjualan ini.")
     st.stop()
 
+# ------------------------------------------------------------
+# Pemisahan data:
+#   df_raw          -> dipakai untuk PIVOT & KLASIFIKASI (semua data)
+#   harian_bersih   -> dipakai untuk REORDER POINT (anomali dibuang)
+# ------------------------------------------------------------
+harian_bersih, iqr_info = build_reorder_data(df_raw)
+sales_stats = build_sales_stats(harian_bersih, start_date, end_date)
+
 st.divider()
 st.subheader("Pivot per Produk")
-
-# Statistik penjualan harian & Reorder Point dihitung SEBELUM pivot,
-# dari data yang sudah difilter (tanggal, brand, jenis penjualan)
-sales_stats = build_sales_stats(df_raw, start_date, end_date)
-
 pivot_df = build_pivot(df_raw)
 st.dataframe(
     hide_cols(pivot_df),
@@ -474,7 +539,7 @@ for i, kuadran in enumerate(QUADRANT_COLORS.keys()):
 # Kolom statistik & Reorder Point berada di antara Stok dan Kategori Kuadran
 display_cols = [
     "Brand", "SKU", "Nama Barang", "Kategori Barang", "QTY", "Stok",
-    "Reorder Point",
+    *STAT_COLS,
     "@Harga", "Total Harga", "Laba", "Gross Profit/Item",
     "Kategori Kuadran", "Skor Kuadran",
 ]
@@ -490,6 +555,25 @@ st.dataframe(
     use_container_width=True,
     height=350,
 )
+
+# Transparansi: ringkasan pembuangan anomali untuk Reorder Point
+total_dibuang = int(iqr_info["Hari Dibuang (Anomali)"].sum())
+total_hari = int(iqr_info["Hari Transaksi"].sum())
+with st.expander(
+    f"Detail IQR & anomali Reorder Point — {total_dibuang:,} dari {total_hari:,} "
+    f"data harian SKU dibuang"
+):
+    st.caption(
+        f"Batas atas = Q3 + {IQR_MULTIPLIER} × (Q3 − Q1), dihitung per SKU dari QTY harian. "
+        f"SKU dengan hari transaksi < {MIN_HARI_IQR} tidak difilter. "
+        f"Data ini hanya memengaruhi kolom statistik & Reorder Point, "
+        f"bukan klasifikasi."
+    )
+    st.dataframe(
+        iqr_info.sort_values("Hari Dibuang (Anomali)", ascending=False).round(2),
+        use_container_width=True,
+        height=300,
+    )
 
 excel_buffer = io.BytesIO()
 with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
