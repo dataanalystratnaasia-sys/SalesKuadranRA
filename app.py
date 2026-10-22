@@ -53,7 +53,7 @@ MARGIN_THRESHOLD = 30000  # fixed, sesuai kode klasifikasi asli
 # Parameter Reorder Point (dalam hari)
 LEAD_TIME = 7            # untuk Lead Time Demand
 LEAD_TIME_TERLAMA = 30   # untuk Safety Stock
-LEAD_TIME_RATA2 = 7      # untuk Safety Stock
+LEAD_TIME_RATA2 = 14      # untuk Safety Stock
 
 # Parameter pembuangan anomali (khusus perhitungan Reorder Point)
 # Batas atas = Q3 + IQR_MULTIPLIER x (Q3 - Q1), dihitung per SKU dari QTY harian.
