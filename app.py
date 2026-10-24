@@ -53,7 +53,7 @@ MARGIN_THRESHOLD = 30000  # fixed, sesuai kode klasifikasi asli
 # Parameter Reorder Point (dalam hari)
 LEAD_TIME = 7            # untuk Lead Time Demand
 LEAD_TIME_TERLAMA = 30   # untuk Safety Stock
-LEAD_TIME_RATA2 = 14      # untuk Safety Stock
+LEAD_TIME_RATA2 = 7      # untuk Safety Stock
 
 # Parameter pembuangan anomali (khusus perhitungan Reorder Point)
 # Batas atas = Q3 + IQR_MULTIPLIER x (Q3 - Q1), dihitung per SKU dari QTY harian.
@@ -64,8 +64,20 @@ IQR_MULTIPLIER = 0.0
 # (data terlalu sedikit untuk menghitung kuartil secara bermakna)
 MIN_HARI_IQR = 4
 
-# Kolom statistik & reorder point yang ditampilkan di tabel hasil
-STAT_COLS = [
+# Deteksi SKU SPORADIS (penjualan jarang tapi QTY besar sekali jual).
+# Untuk SKU seperti ini, "Penjualan Harian Tertinggi" dan "Rata-Rata Penjualan Harian"
+# hampir sama dengan QTY sekali transaksi, sehingga Safety Stock membengkak.
+# SKU dianggap sporadis jika SALAH SATU terpenuhi:
+#   - hari transaksi < MIN_HARI_SPORADIS
+#   - frekuensi jual (hari transaksi / hari kalender) < MIN_FREKUENSI_JUAL
+# Untuk SKU sporadis: Safety Stock = 0, Reorder Point = Lead Time Demand saja.
+MIN_HARI_SPORADIS = 4
+MIN_FREKUENSI_JUAL = 0.10
+# Lead Time yang dipakai di Lead Time Demand khusus SKU sporadis (hari)
+LEAD_TIME_SPORADIS = 1
+
+# Kolom numerik statistik & reorder point
+STAT_NUM_COLS = [
     "Rata-Rata Penjualan Per-Hari",
     "Penjualan Harian Tertinggi",
     "Rata-Rata Penjualan Harian",
@@ -73,6 +85,8 @@ STAT_COLS = [
     "Safety Stock",
     "Reorder Point",
 ]
+# Kolom yang ditampilkan di tabel hasil (termasuk penanda pola penjualan)
+STAT_COLS = STAT_NUM_COLS + ["Pola Penjualan"]
 
 NAMA_ONLINE = ["ARUM", "LUTHFIAH WARDAH"]
 NAMA_EXCLUDE_OFFLINE = ["ARUM", "LUTHFIAH WARDAH", "Internal"]
@@ -273,7 +287,9 @@ def build_reorder_data(df: pd.DataFrame):
 # ============================================================
 # STATISTIK PENJUALAN HARIAN & REORDER POINT (per SKU)
 # ============================================================
-def build_sales_stats(harian_bersih: pd.DataFrame, start_date, end_date) -> pd.DataFrame:
+def build_sales_stats(
+    harian_bersih: pd.DataFrame, iqr_info: pd.DataFrame, start_date, end_date
+) -> pd.DataFrame:
     """
     Hitung statistik penjualan harian & Reorder Point per SKU dari data harian
     yang sudah dibersihkan dari anomali (lihat build_reorder_data).
@@ -303,14 +319,26 @@ def build_sales_stats(harian_bersih: pd.DataFrame, start_date, end_date) -> pd.D
     stats["Rata-Rata Penjualan Per-Hari"] = stats["total_qty"] / jumlah_hari
     stats = stats.drop(columns="total_qty").rename(columns={COL_SKU: "SKU"})
 
+    # ---- Deteksi SKU sporadis (berdasarkan hari transaksi SEBELUM anomali dibuang) ----
+    stats = stats.merge(iqr_info[["SKU", "Hari Transaksi"]], on="SKU", how="left")
+    frekuensi = stats["Hari Transaksi"] / jumlah_hari
+    sporadis = (stats["Hari Transaksi"] < MIN_HARI_SPORADIS) | (
+        frekuensi < MIN_FREKUENSI_JUAL
+    )
+    stats["Pola Penjualan"] = np.where(sporadis, "Sporadis", "Reguler")
+
     # ---- Reorder Point ----
-    stats["Lead Time Demand"] = LEAD_TIME * stats["Rata-Rata Penjualan Per-Hari"]
-    stats["Safety Stock"] = (
+    # SKU sporadis memakai LEAD_TIME_SPORADIS (1 hari), SKU reguler memakai LEAD_TIME (7 hari)
+    lead_time_efektif = np.where(sporadis, LEAD_TIME_SPORADIS, LEAD_TIME)
+    stats["Lead Time Demand"] = lead_time_efektif * stats["Rata-Rata Penjualan Per-Hari"]
+    safety_stock = (
         stats["Penjualan Harian Tertinggi"] * LEAD_TIME_TERLAMA
     ) - (stats["Rata-Rata Penjualan Harian"] * LEAD_TIME_RATA2)
+    # SKU sporadis: Safety Stock tidak dihitung (max & rata-rata tidak representatif)
+    stats["Safety Stock"] = np.where(sporadis, 0, safety_stock)
     stats["Reorder Point"] = stats["Lead Time Demand"] + stats["Safety Stock"]
 
-    stats[STAT_COLS] = stats[STAT_COLS].round(2)
+    stats[STAT_NUM_COLS] = stats[STAT_NUM_COLS].round(2)
     return stats[["SKU", *STAT_COLS]]
 
 
@@ -507,7 +535,7 @@ if df_raw.empty:
 #   harian_bersih   -> dipakai untuk REORDER POINT (anomali dibuang)
 # ------------------------------------------------------------
 harian_bersih, iqr_info = build_reorder_data(df_raw)
-sales_stats = build_sales_stats(harian_bersih, start_date, end_date)
+sales_stats = build_sales_stats(harian_bersih, iqr_info, start_date, end_date)
 
 st.divider()
 st.subheader("Pivot per Produk")
@@ -529,7 +557,8 @@ result_df["Stok"] = result_df["Stok"].fillna(0)  # SKU tidak ada di sheet Stok -
 
 # Gabungkan statistik penjualan harian & Reorder Point
 result_df = result_df.merge(sales_stats, on="SKU", how="left")
-result_df[STAT_COLS] = result_df[STAT_COLS].fillna(0)
+result_df[STAT_NUM_COLS] = result_df[STAT_NUM_COLS].fillna(0)
+result_df["Pola Penjualan"] = result_df["Pola Penjualan"].fillna("-")
 
 info_cols = st.columns(4)
 for i, kuadran in enumerate(QUADRANT_COLORS.keys()):
@@ -539,7 +568,7 @@ for i, kuadran in enumerate(QUADRANT_COLORS.keys()):
 # Kolom statistik & Reorder Point berada di antara Stok dan Kategori Kuadran
 display_cols = [
     "Brand", "SKU", "Nama Barang", "Kategori Barang", "QTY", "Stok",
-    "Reorder Point",
+    *STAT_COLS,
     "@Harga", "Total Harga", "Laba", "Gross Profit/Item",
     "Kategori Kuadran", "Skor Kuadran",
 ]
@@ -567,7 +596,11 @@ with st.expander(
         f"Batas atas = Q3 + {IQR_MULTIPLIER} × (Q3 − Q1), dihitung per SKU dari QTY harian. "
         f"SKU dengan hari transaksi < {MIN_HARI_IQR} tidak difilter. "
         f"Data ini hanya memengaruhi kolom statistik & Reorder Point, "
-        f"bukan klasifikasi."
+        f"bukan klasifikasi. "
+        f"SKU 'Sporadis' (hari transaksi < {MIN_HARI_SPORADIS} atau frekuensi jual < "
+        f"{MIN_FREKUENSI_JUAL:.0%} dari hari kalender) tidak dihitung Safety Stock-nya "
+        f"dan Lead Time Demand-nya memakai lead time {LEAD_TIME_SPORADIS} hari, "
+        f"sehingga Reorder Point = Lead Time Demand."
     )
     st.dataframe(
         iqr_info.sort_values("Hari Dibuang (Anomali)", ascending=False).round(2),
