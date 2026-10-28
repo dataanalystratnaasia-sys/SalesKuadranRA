@@ -579,8 +579,30 @@ excel_cols = [c for c in display_cols if c not in EXCEL_HIDDEN_COLS]
 
 # Urutan tetap berdasarkan Skor Kuadran, tapi kolom skor tidak ditampilkan di UI
 result_sorted = result_df[display_cols].sort_values("Skor Kuadran", ascending=False)
+
+# ---- Filter brand khusus tabel hasil (hanya memengaruhi tabel & file download) ----
+brand_hasil_options = sorted(
+    b for b in result_sorted["Brand"].dropna().unique()
+    if b not in ("", "nan", "None")
+)
+brand_tabel_terpilih = st.multiselect(
+    "Filter Brand (tabel hasil)",
+    options=brand_hasil_options,
+    default=[],
+    placeholder="Semua brand",
+    key="filter_brand_tabel_hasil",
+)
+
+if brand_tabel_terpilih:
+    result_view = result_sorted[result_sorted["Brand"].isin(brand_tabel_terpilih)]
+    result_download = result_df[result_df["Brand"].isin(brand_tabel_terpilih)]
+else:
+    result_view = result_sorted
+    result_download = result_df
+
+st.caption(f"Menampilkan {len(result_view):,} dari {len(result_sorted):,} SKU")
 st.dataframe(
-    hide_cols(result_sorted),
+    hide_cols(result_view),
     use_container_width=True,
     height=350,
 )
@@ -608,9 +630,10 @@ with st.expander(
         height=300,
     )
 
+# File Excel mengikuti filter brand pada tabel hasil
 excel_buffer = io.BytesIO()
 with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-    result_df[excel_cols].to_excel(writer, index=False, sheet_name="Hasil Klasifikasi")
+    result_download[excel_cols].to_excel(writer, index=False, sheet_name="Hasil Klasifikasi")
 excel_buffer.seek(0)
 
 st.download_button(
